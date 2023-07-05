@@ -41,8 +41,12 @@ class RabbitMQEventBus extends AbstractEventBus
         $this->waitTimeout = $connection['wait_timeout'];
         $this->exchange = 'amq.' . AMQPExchangeType::FANOUT;
 
-        $this->channel = $this->connection->channel();
+        $this->connect();
+    }
 
+    public function connect(): void
+    {
+        $this->channel = $this->connection->channel();
         $this->channel->queue_declare(
             queue: $this->queue,
             passive: false,
@@ -57,21 +61,32 @@ class RabbitMQEventBus extends AbstractEventBus
 
     public function applyBasicConsume(): void
     {
-        $this->channel->basic_qos(
-            prefetch_size: null,
-            prefetch_count: 1,
-            a_global: null,
-        );
+        $function = function () {
+            $this->channel->basic_qos(
+                prefetch_size: 0,
+                prefetch_count: 1,
+                a_global: false,
+            );
 
-        $this->channel->basic_consume(
-            queue: $this->queue,
-            consumer_tag: '',
-            no_local: true,
-            no_ack: false,
-            exclusive: false,
-            nowait: false,
-            callback: fn(AMQPMessage $message) => $this->processMessage($message),
-        );
+            $this->channel->basic_consume(
+                queue: $this->queue,
+                consumer_tag: '',
+                no_local: true,
+                no_ack: false,
+                exclusive: false,
+                nowait: false,
+                callback: fn(AMQPMessage $message) => $this->processMessage($message),
+            );
+        };
+
+        try {
+            $function();
+        }
+        catch (\Throwable) {
+            $this->connect();
+            $function();
+        }
+
     }
 
     public function listen(): void
@@ -113,14 +128,24 @@ class RabbitMQEventBus extends AbstractEventBus
 
     public function dispatch(Event $event): void
     {
-        $this->channel->basic_publish(
-            new AMQPMessage(json_encode($event->getData()), [
-                'delivery_mode' => AMQPMessage::DELIVERY_MODE_PERSISTENT,
-            ]),
-            $this->exchange,
-            $event->getKey()
-        );
+        $function = function (array $data, string $exchange, string $key) {
+            $this->channel->basic_publish(
+                new AMQPMessage(json_encode($data), [
+                    'delivery_mode' => AMQPMessage::DELIVERY_MODE_PERSISTENT,
+                ]),
+                $exchange,
+                $key
+            );
+        };
+
+        try {
+            $function($event->getData(), $this->exchange, $event->getKey());
+        } catch (\Throwable) {
+            $this->connect();
+            $function($event->getData(), $this->exchange, $event->getKey());
+        }
     }
+
 
     /**
      * @throws EventNotCaughtException
@@ -142,9 +167,9 @@ class RabbitMQEventBus extends AbstractEventBus
 
         $channel = $this->connection->channel();
         $channel->basic_qos(
-            prefetch_size: null,
+            prefetch_size: 0,
             prefetch_count: 1,
-            a_global: null,
+            a_global: false,
         );
         $channel->basic_consume(
             queue: $this->waitQueue,
