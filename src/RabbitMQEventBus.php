@@ -34,59 +34,59 @@ class RabbitMQEventBus extends AbstractEventBus
 
     private string $waitQueue;
 
+    private int $connectionRetries;
+
     public function __construct(array $connection)
     {
         $this->connection = AMQPConnectionFactory::create($connection['config']);
         $this->queue = $connection['queue_name'];
         $this->waitTimeout = $connection['wait_timeout'];
         $this->exchange = 'amq.' . AMQPExchangeType::FANOUT;
+        $this->connectionRetries = $connection['connection_retries'];
 
         $this->connect();
     }
 
     public function connect(): void
     {
-        $this->channel = $this->connection->channel();
-        $this->channel->queue_declare(
-            queue: $this->queue,
-            passive: false,
-            durable: true,
-            exclusive: false,
-            auto_delete: false,
-            nowait: false,
-            arguments: new AMQPTable(['x-queue-mode' => 'default']),
-        );
-        $this->channel->queue_bind($this->queue, $this->exchange);
+        while ($this->connectionRetries) {
+            try {
+                $this->channel = $this->connection->channel();
+                $this->channel->queue_declare(
+                    queue: $this->queue,
+                    passive: false,
+                    durable: true,
+                    exclusive: false,
+                    auto_delete: false,
+                    nowait: false,
+                    arguments: new AMQPTable(['x-queue-mode' => 'default']),
+                );
+                $this->channel->queue_bind($this->queue, $this->exchange);
+            } catch (\Exception $exception) {
+                $this->connect();
+            }
+        }
     }
 
     public function applyBasicConsume(): void
     {
-        $function = function () {
-            $this->channel->basic_qos(
-                prefetch_size: 0,
-                prefetch_count: 1,
-                a_global: false,
-            );
+        $this->connect();
 
-            $this->channel->basic_consume(
-                queue: $this->queue,
-                consumer_tag: '',
-                no_local: true,
-                no_ack: false,
-                exclusive: false,
-                nowait: false,
-                callback: fn(AMQPMessage $message) => $this->processMessage($message),
-            );
-        };
+        $this->channel->basic_qos(
+            prefetch_size: 0,
+            prefetch_count: 1,
+            a_global: false,
+        );
 
-        try {
-            $function();
-        }
-        catch (\Throwable) {
-            $this->connect();
-            $function();
-        }
-
+        $this->channel->basic_consume(
+            queue: $this->queue,
+            consumer_tag: '',
+            no_local: true,
+            no_ack: false,
+            exclusive: false,
+            nowait: false,
+            callback: fn(AMQPMessage $message) => $this->processMessage($message),
+        );
     }
 
     public function listen(): void
@@ -128,24 +128,17 @@ class RabbitMQEventBus extends AbstractEventBus
 
     public function dispatch(Event $event): void
     {
-        $function = function (array $data, string $exchange, string $key) {
-            $this->channel->basic_publish(
-                new AMQPMessage(json_encode($data), [
-                    'delivery_mode' => AMQPMessage::DELIVERY_MODE_PERSISTENT,
-                ]),
-                $exchange,
-                $key
-            );
-        };
+        $this->connect();
 
-        try {
-            $function($event->getData(), $this->exchange, $event->getKey());
-        } catch (\Throwable) {
-            $this->connect();
-            $function($event->getData(), $this->exchange, $event->getKey());
-        }
+        $this->channel->basic_publish(
+            new AMQPMessage(json_encode($event->getData()), [
+                'delivery_mode' => AMQPMessage::DELIVERY_MODE_PERSISTENT,
+            ]),
+            $this->exchange,
+            $event->getKey()
+        );
+
     }
-
 
     /**
      * @throws EventNotCaughtException
