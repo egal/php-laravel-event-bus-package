@@ -43,8 +43,6 @@ class RabbitMQEventBus extends AbstractEventBus
         $this->waitTimeout = $connection['wait_timeout'];
         $this->exchange = 'amq.' . AMQPExchangeType::FANOUT;
         $this->connectionRetries = $connection['connection_retries'];
-
-        $this->connect();
     }
 
     public function connect(): void
@@ -62,8 +60,8 @@ class RabbitMQEventBus extends AbstractEventBus
                     arguments: new AMQPTable(['x-queue-mode' => 'default']),
                 );
                 $this->channel->queue_bind($this->queue, $this->exchange);
-            } catch (\Exception $exception) {
-                $this->connect();
+            } catch (\Exception) {
+                continue;
             }
         }
     }
