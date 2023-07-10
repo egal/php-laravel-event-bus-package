@@ -47,11 +47,12 @@ class RabbitMQEventBus extends AbstractEventBus
 
     public function connect(): void
     {
-        $currentConnectionTry = 0;
+        if (!empty($this->channel) && $this->channel->is_open()) return;
 
-        while ($currentConnectionTry < $this->maxConnectionRetries) {
+        $failingStreak = 0;
+
+        while (true) {
             try {
-                $currentConnectionTry++;
                 $this->channel = $this->connection->channel();
                 $this->channel->queue_declare(
                     queue: $this->queue,
@@ -65,8 +66,13 @@ class RabbitMQEventBus extends AbstractEventBus
                 $this->channel->queue_bind($this->queue, $this->exchange);
                 break;
             } catch (\Exception) {
-                continue;
+                $failingStreak++;
             }
+
+            if ($failingStreak >= $this->maxConnectionRetries) {
+                throw new \Exception("Failed connect to RabbitMQ!");
+            }
+
         }
     }
 
@@ -147,6 +153,7 @@ class RabbitMQEventBus extends AbstractEventBus
      */
     public function wait(string $key): array
     {
+        $this->connect();
         $this->upWaitQueue();
 
         $result = null;
@@ -199,6 +206,7 @@ class RabbitMQEventBus extends AbstractEventBus
         if (isset($this->waitQueue)) {
             return;
         }
+        $this->connect();
 
         $this->waitQueue = $queue = Str::uuid()->toString();
 
