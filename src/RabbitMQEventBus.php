@@ -34,7 +34,7 @@ class RabbitMQEventBus extends AbstractEventBus
 
     private string $waitQueue;
 
-    private int $connectionRetries;
+    private int $maxConnectionRetries;
 
     public function __construct(array $connection)
     {
@@ -42,13 +42,16 @@ class RabbitMQEventBus extends AbstractEventBus
         $this->queue = $connection['queue_name'];
         $this->waitTimeout = $connection['wait_timeout'];
         $this->exchange = 'amq.' . AMQPExchangeType::FANOUT;
-        $this->connectionRetries = $connection['connection_retries'];
+        $this->maxConnectionRetries = $connection['max_connection_retries'];
     }
 
     public function connect(): void
     {
-        while ($this->connectionRetries) {
+        $currentConnectionTry = 0;
+
+        while ($currentConnectionTry < $this->maxConnectionRetries) {
             try {
+                $currentConnectionTry++;
                 $this->channel = $this->connection->channel();
                 $this->channel->queue_declare(
                     queue: $this->queue,
@@ -60,6 +63,7 @@ class RabbitMQEventBus extends AbstractEventBus
                     arguments: new AMQPTable(['x-queue-mode' => 'default']),
                 );
                 $this->channel->queue_bind($this->queue, $this->exchange);
+                break;
             } catch (\Exception) {
                 continue;
             }
