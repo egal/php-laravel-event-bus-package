@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Egal\LaravelEventBus;
 
+use Exception;
 use Illuminate\Support\Str;
 use PhpAmqpLib\Channel\AbstractChannel;
 use PhpAmqpLib\Channel\AMQPChannel;
@@ -43,16 +44,17 @@ class RabbitMQEventBus extends AbstractEventBus
         $this->waitTimeout = $connection['wait_timeout'];
         $this->exchange = 'amq.' . AMQPExchangeType::FANOUT;
         $this->maxConnectionRetries = $connection['max_connection_retries'];
+        $this->connect();
     }
 
     public function connect(): void
     {
-        if (!empty($this->channel) && $this->channel->is_open()) return;
-
         $failingStreak = 0;
 
         while (true) {
             try {
+                if (isset($this->channel) && $this->testConnectionMessage()) return;
+
                 $this->channel = $this->connection->channel();
                 $this->channel->queue_declare(
                     queue: $this->queue,
@@ -64,8 +66,10 @@ class RabbitMQEventBus extends AbstractEventBus
                     arguments: new AMQPTable(['x-queue-mode' => 'default']),
                 );
                 $this->channel->queue_bind($this->queue, $this->exchange);
+
                 break;
-            } catch (\Exception) {
+            } catch (\Exception $exception) {
+                usleep(5000);
                 $failingStreak++;
             }
 
@@ -78,8 +82,6 @@ class RabbitMQEventBus extends AbstractEventBus
 
     public function applyBasicConsume(): void
     {
-        $this->connect();
-
         $this->channel->basic_qos(
             prefetch_size: 0,
             prefetch_count: 1,
@@ -99,6 +101,8 @@ class RabbitMQEventBus extends AbstractEventBus
 
     public function listen(): void
     {
+        $this->connect();
+
         $this->applyBasicConsume();
 
         while ($this->channel->is_open()) {
@@ -222,6 +226,23 @@ class RabbitMQEventBus extends AbstractEventBus
     public function downWaitQueue(): void
     {
         unset($this->waitQueue);
+    }
+
+    private function testConnectionMessage(): bool
+    {
+        try {
+            $this->channel->basic_publish(
+                new AMQPMessage(json_encode(['message' => 'test']), [
+                    'delivery_mode' => AMQPMessage::DELIVERY_MODE_NON_PERSISTENT,
+                ]),
+                $this->exchange,
+                'testMessage'
+            );
+            return true;
+        } catch (Exception) {
+            return false;
+        }
+
     }
 
 }
