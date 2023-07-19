@@ -37,7 +37,7 @@ class RabbitMQEventBus extends AbstractEventBus
 
     private int $maxConnectionRetries;
 
-    private int $connectionRetriesTimeout;
+    private float $connectionRetriesTimeout;
 
     public function __construct(array $connection)
     {
@@ -73,7 +73,7 @@ class RabbitMQEventBus extends AbstractEventBus
                 break;
             } catch (\Exception $exception) {
                 $failingStreak++;
-                usleep($this->connectionRetriesTimeout * $failingStreak);
+                usleep((int)($this->connectionRetriesTimeout * 1000) * $failingStreak);
             }
 
             if ($failingStreak >= $this->maxConnectionRetries) {
