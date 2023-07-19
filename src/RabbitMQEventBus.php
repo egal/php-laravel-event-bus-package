@@ -37,6 +37,8 @@ class RabbitMQEventBus extends AbstractEventBus
 
     private int $maxConnectionRetries;
 
+    private int $connectionRetriesTimeout;
+
     public function __construct(array $connection)
     {
         $this->connection = AMQPConnectionFactory::create($connection['config']);
@@ -44,6 +46,7 @@ class RabbitMQEventBus extends AbstractEventBus
         $this->waitTimeout = $connection['wait_timeout'];
         $this->exchange = 'amq.' . AMQPExchangeType::FANOUT;
         $this->maxConnectionRetries = $connection['max_connection_retries'];
+        $this->connectionRetriesTimeout = $connection['connection_retries_timeout'];
         $this->connect();
     }
 
@@ -51,10 +54,10 @@ class RabbitMQEventBus extends AbstractEventBus
     {
         $failingStreak = 0;
 
+        if (isset($this->channel) && $this->testConnectionMessage()) return;
+
         while (true) {
             try {
-                if (isset($this->channel) && $this->testConnectionMessage()) return;
-
                 $this->channel = $this->connection->channel();
                 $this->channel->queue_declare(
                     queue: $this->queue,
@@ -69,12 +72,12 @@ class RabbitMQEventBus extends AbstractEventBus
 
                 break;
             } catch (\Exception $exception) {
-                usleep(5000);
                 $failingStreak++;
+                usleep($this->connectionRetriesTimeout * $failingStreak);
             }
 
             if ($failingStreak >= $this->maxConnectionRetries) {
-                throw new \Exception("Failed connect to RabbitMQ!");
+                throw new ConnectionFailedException("Failed connect to RabbitMQ!");
             }
 
         }
@@ -82,6 +85,8 @@ class RabbitMQEventBus extends AbstractEventBus
 
     public function applyBasicConsume(): void
     {
+        $this->connect();
+
         $this->channel->basic_qos(
             prefetch_size: 0,
             prefetch_count: 1,
@@ -101,8 +106,6 @@ class RabbitMQEventBus extends AbstractEventBus
 
     public function listen(): void
     {
-        $this->connect();
-
         $this->applyBasicConsume();
 
         while ($this->channel->is_open()) {
@@ -231,13 +234,22 @@ class RabbitMQEventBus extends AbstractEventBus
     private function testConnectionMessage(): bool
     {
         try {
+            $exchangeUUID = Str::uuid()->toString();
+
+            $temporaryExchange = $this->channel->exchange_declare(
+                $exchangeUUID,
+                AMQPExchangeType::DIRECT,
+            );
+
             $this->channel->basic_publish(
                 new AMQPMessage(json_encode(['message' => 'test']), [
                     'delivery_mode' => AMQPMessage::DELIVERY_MODE_NON_PERSISTENT,
                 ]),
-                $this->exchange,
-                'testMessage'
+                $temporaryExchange,
+                $exchangeUUID
             );
+
+            $this->channel->exchange_delete($exchangeUUID);
             return true;
         } catch (Exception) {
             return false;
